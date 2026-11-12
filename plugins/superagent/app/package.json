@@ -1,0 +1,19 @@
+{
+  "name": "superagent-host",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Self-hosted superagent host: GitHub mentions become tickets worked by Claude Code, Codex or OpenCode, routed by a model.",
+  "type": "module",
+  "license": "MIT",
+  "engines": { "node": ">=24" },
+  "bin": { "superagent": "src/main.ts", "sa": "bin/sa" },
+  "scripts": {
+    "start": "node src/main.ts start",
+    "doctor": "node src/main.ts doctor",
+    "detect": "node src/main.ts detect",
+    "test": "node --test test/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": { "zod": "^3.25.76" },
+  "devDependencies": { "@types/node": "^24.0.0", "typescript": "^5.9.0" }
+}

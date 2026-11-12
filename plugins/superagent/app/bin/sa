@@ -1,0 +1,69 @@
+#!/usr/bin/env node
+// sa: the worker's only channel to the host. POSTs JSON to
+// $SUPERAGENT_URL/api/worker/<command> with the ticket's bearer token.
+
+const USAGE = `usage:
+  sa show
+  sa ack [--to <trigger>] <text>
+  sa reply --to <trigger> <text>
+  sa report <progress|waiting|ready|blocked|failed|dropped> [--pr N] [--summary S] [--message M] [--question Q] [--to <trigger>]
+  sa handback <trigger> <reason>`;
+
+const [cmd, ...rest] = process.argv.slice(2);
+const flags = {};
+const pos = [];
+for (let i = 0; i < rest.length; i++) {
+  const a = rest[i];
+  if (a.startsWith("--")) {
+    const eq = a.indexOf("=");
+    if (eq > 0) flags[a.slice(2, eq)] = a.slice(eq + 1);
+    else flags[a.slice(2)] = rest[++i];
+  } else pos.push(a);
+}
+
+let body;
+switch (cmd) {
+  case "show":
+    body = {};
+    break;
+  case "ack":
+    body = { to: flags.to, text: pos.join(" ") };
+    break;
+  case "reply":
+    body = { to: flags.to, text: pos.join(" ") };
+    break;
+  case "report":
+    body = { status: pos[0], pr: flags.pr, summary: flags.summary, message: flags.message, question: flags.question, to: flags.to };
+    break;
+  case "handback":
+    body = { trigger: pos[0], reason: pos.slice(1).join(" ") };
+    break;
+  default:
+    console.error(USAGE);
+    process.exit(2);
+}
+
+const url = process.env.SUPERAGENT_URL;
+const token = process.env.SUPERAGENT_TOKEN;
+if (!url || !token) {
+  console.error("refused: SUPERAGENT_URL and SUPERAGENT_TOKEN must be set");
+  process.exit(1);
+}
+
+let res;
+try {
+  res = await fetch(`${url.replace(/\/$/, "")}/api/worker/${cmd}`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+} catch (e) {
+  console.error(`error: host unreachable at ${url}: ${e.message}`);
+  process.exit(1);
+}
+const out = await res.json().catch(() => ({}));
+if (!res.ok) {
+  console.error(`refused: ${out.refused ?? out.error ?? res.status}`);
+  process.exit(1);
+}
+console.log(JSON.stringify(out, null, cmd === "show" ? 2 : 0));

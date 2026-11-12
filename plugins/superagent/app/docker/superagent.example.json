@@ -1,0 +1,177 @@
+{
+  "stateDir": "/data/state",
+  "sources": {
+    "github": {
+      "repo": "OWNER/sandbox",
+      "agentLogin": "BOT",
+      "allow": [
+        "OWNER"
+      ],
+      "pollSeconds": 30
+    }
+  },
+  "roster": [
+    {
+      "id": "claude-opus",
+      "adapter": "claude-code",
+      "model": "opus",
+      "effort": "high",
+      "cost": 5,
+      "tags": [
+        "hard"
+      ],
+      "maxConcurrent": 2,
+      "strengths": "Claude Opus. Hardest work: design changes, subtle bugs, large refactors, unclear requests."
+    },
+    {
+      "id": "claude-sonnet",
+      "adapter": "claude-code",
+      "model": "sonnet",
+      "cost": 2,
+      "tags": [
+        "default"
+      ],
+      "maxConcurrent": 2,
+      "strengths": "Claude Sonnet. Everyday features and fixes; follows repository conventions well."
+    },
+    {
+      "id": "claude-haiku",
+      "adapter": "claude-code",
+      "model": "haiku",
+      "cost": 1,
+      "tags": [
+        "cheap"
+      ],
+      "maxConcurrent": 2,
+      "strengths": "Claude Haiku. Small mechanical changes: typos, renames, config, docs."
+    },
+    {
+      "id": "codex-gpt-6.1-sol",
+      "adapter": "codex",
+      "model": "gpt-6.1-sol",
+      "effort": "high",
+      "cost": 3,
+      "tags": [
+        "codex"
+      ],
+      "maxConcurrent": 1,
+      "strengths": "OpenAI gpt-6.1-sol through the Codex CLI (generation 6.1). Edit this line with what you find it good at."
+    },
+    {
+      "id": "codex-gpt-6.1-terra",
+      "adapter": "codex",
+      "model": "gpt-6.1-terra",
+      "effort": "high",
+      "cost": 3,
+      "tags": [
+        "codex"
+      ],
+      "maxConcurrent": 1,
+      "strengths": "OpenAI gpt-6.1-terra through the Codex CLI (generation 6.1). Edit this line with what you find it good at."
+    },
+    {
+      "id": "codex-gpt-6-astra",
+      "adapter": "codex",
+      "model": "gpt-6-astra",
+      "effort": "high",
+      "cost": 2,
+      "tags": [
+        "codex"
+      ],
+      "maxConcurrent": 1,
+      "strengths": "OpenAI gpt-6-astra through the Codex CLI (generation 6). Edit this line with what you find it good at."
+    },
+    {
+      "id": "codex-gpt-6-sol",
+      "adapter": "codex",
+      "model": "gpt-6-sol",
+      "effort": "high",
+      "cost": 2,
+      "tags": [
+        "codex"
+      ],
+      "maxConcurrent": 1,
+      "strengths": "OpenAI gpt-6-sol through the Codex CLI (generation 6). Edit this line with what you find it good at."
+    },
+    {
+      "id": "codex-gpt-6-luna",
+      "adapter": "codex",
+      "model": "gpt-6-luna",
+      "effort": "high",
+      "cost": 2,
+      "tags": [
+        "codex"
+      ],
+      "maxConcurrent": 1,
+      "strengths": "OpenAI gpt-6-luna through the Codex CLI (generation 6). Edit this line with what you find it good at."
+    },
+    {
+      "id": "codex-gpt-5.6-sol",
+      "adapter": "codex",
+      "model": "gpt-5.6-sol",
+      "effort": "medium",
+      "cost": 1,
+      "tags": [
+        "codex",
+        "cheap"
+      ],
+      "maxConcurrent": 1,
+      "strengths": "OpenAI gpt-5.6-sol through the Codex CLI (generation 5.6). Edit this line with what you find it good at."
+    },
+    {
+      "id": "codex-gpt-5.6-terra",
+      "adapter": "codex",
+      "model": "gpt-5.6-terra",
+      "effort": "medium",
+      "cost": 1,
+      "tags": [
+        "codex",
+        "cheap"
+      ],
+      "maxConcurrent": 1,
+      "strengths": "OpenAI gpt-5.6-terra through the Codex CLI (generation 5.6). Edit this line with what you find it good at."
+    },
+    {
+      "id": "codex-gpt-5.6-luna",
+      "adapter": "codex",
+      "model": "gpt-5.6-luna",
+      "effort": "medium",
+      "cost": 1,
+      "tags": [
+        "codex",
+        "cheap"
+      ],
+      "maxConcurrent": 1,
+      "strengths": "OpenAI gpt-5.6-luna through the Codex CLI (generation 5.6). Edit this line with what you find it good at."
+    }
+  ],
+  "router": {
+    "mode": "llm",
+    "model": "claude-opus-5-5",
+    "effort": "high",
+    "failoverEffort": "medium",
+    "defaultEntry": "claude-sonnet"
+  },
+  "review": {
+    "enabled": true,
+    "rounds": 1,
+    "reviewers": []
+  },
+  "worker": {
+    "maxConcurrent": 3,
+    "turnTimeoutMinutes": 60,
+    "maxRetries": 3,
+    "cooldownMinutes": 30
+  },
+  "workspace": {
+    "repoPath": "/data/repo",
+    "branchPrefix": "agent/"
+  },
+  "messages": {
+    "maxWords": 120
+  },
+  "panel": {
+    "host": "0.0.0.0",
+    "port": 3090
+  }
+}

@@ -1,0 +1,20 @@
+services:
+  superagent:
+    build: { context: .., dockerfile: docker/Dockerfile }
+    init: true
+    restart: unless-stopped
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 8g
+    pids_limit: 1024
+    env_file: .env.sandbox
+    environment:
+      SUPERAGENT_CONFIG: /config/superagent.json
+    ports:
+      - "127.0.0.1:3090:3090"
+    volumes:
+      - data:/data
+      - ./superagent.json:/config/superagent.json:ro
+      - ../prompts:/app/prompts:ro
+volumes:
+  data:

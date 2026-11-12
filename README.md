@@ -1,6 +1,8 @@
-# DeepSeek's superagent pattern, set up with Claude Code or OpenCode
+# DeepSeek's superagent pattern, set up with Claude Code, Codex or OpenCode
 
-A guide for an AI coding assistant. Read it fully before acting. It explains what DeepSeek's "superagent" is, and how to build and set up your own version in which the coding work is done by **Claude Code** or **OpenCode**. Facts and CLI flags were verified on 2–3 November 2026 with Claude Code 2.1.316 and OpenCode 2.0.30; check `--help` if versions have moved on.
+A guide for an AI coding assistant. Read it fully before acting. It explains what DeepSeek's "superagent" is, and how to build and set up your own version in which the coding work is done by **Claude Code**, **OpenAI Codex** or **OpenCode**, with every model you have on one roster and **Claude Opus routing each ticket** to the model that suits it. Facts and CLI flags were verified on 2–3 November 2026 with Claude Code 2.1.316 and OpenCode 2.0.30, and on 12 November 2026 with Claude Code 2.1.322 and Codex CLI 0.167; check `--help` if versions have moved on.
+
+A working implementation ships with this repository as a Claude Code plugin: see [section 11](#11-the-claude-code-plugin-in-this-repository).
 
 > Video walkthrough: [https://youtu.be/n2TLtU65ZtA](https://youtu.be/n2TLtU65ZtA)
 
@@ -15,7 +17,7 @@ A guide for an AI coding assistant. Read it fully before acting. It explains wha
 
 Questions to ask, in order (recommendations in brackets):
 
-1. Which coding agent should do the work? [Claude Code; OpenCode if they prefer other model providers.]
+1. Which coding agents and models should do the work? [Every one they have: Claude Code and Codex models on one roster, routed by Claude Opus. OpenCode too if they use other providers.]
 2. Which GitHub repository should the agent work on? [A new private sandbox repo first, never a shared production repo.]
 3. Which GitHub account will the agent act as? [A dedicated bot account, never their own. Section 7 explains why.]
 4. Which GitHub logins may ask the agent for work? [Only their own login, to start.]
@@ -34,7 +36,7 @@ Questions to ask, in order (recommendations in brackets):
 ## 2. Two ways to run it
 
 1. **The original, on DeepSeek Harness.** Its workers are DeepSeek Harness sessions using whatever model provider the harness is configured with; it does not use Claude Code or OpenCode. Follow the repository's `SETUP.md`, which is written for an agent to run with its operator. Expect breaking changes: the harness is a developer preview.
-2. **Your own version of the pattern, with Claude Code or OpenCode as the worker.** This is the rest of this guide. It keeps DeepSeek's ideas, drops the harness dependency, and is small: about 2,800 lines of TypeScript including tests, with Node 24, SQLite (`node:sqlite`) and `zod` as the only runtime dependency.
+2. **Your own version of the pattern, with Claude Code, Codex or OpenCode as the workers.** This is the rest of this guide. It keeps DeepSeek's ideas, drops the harness dependency, and is small: about 2,800 lines of TypeScript including tests, with Node 24, SQLite (`node:sqlite`) and `zod` as the only runtime dependency. Several agents can work side by side: a router model assigns each ticket to one entry of a model roster (section 5).
 
 ---
 
@@ -91,7 +93,7 @@ Before resuming an ended ticket, check that its original requester is still on t
   - A passing CI run is context only; a failing run wakes the ticket.
 - **Temporary failures** (HTTP 408, 429, 5xx, "overloaded", connection resets): retry up to three times with growing backoff, then report `failed`.
 - **Restart:** a turn that was running starts again with a recovery note telling the worker to check its directory, git history and GitHub before repeating any outside action. Include the inputs of the cut-off turn in that note.
-- **Concurrency:** N worker slots plus one reserved for a person's follow-up.
+- **Concurrency:** N worker slots plus one reserved for a person's follow-up, and at most `maxConcurrent` turns per roster model.
 
 ### Components
 
@@ -102,14 +104,18 @@ Source (GitHub poller, local panel form)
 Engine ── gate ── new ticket | deliver to ticket | stop | ignore
    │ Ticket + Inputs                                 ▲
    ▼                                                 │ sa ack / reply / report / handback
-Executor ── git worktree ── Worker adapter ── claude -p … │ opencode run …
+Router ── model: hint │ claude -p --model opus (no tools) │ rules
+   │ roster entry
+   ▼
+Executor ── git worktree ── Worker adapter ── claude -p … │ codex exec … │ opencode run …
    │
 Outbox ── ordered, retried ──▶ Source.send (adds the automated-agent header on GitHub)
 ```
 
 - **Engine:** the only writer of triggers, tickets and inputs; every command in one database transaction.
+- **Router:** chooses the roster entry for a new ticket, and a replacement when that entry fails. It runs after the gate, so it only ever decides *which model*, never *whether* to work.
 - **Executor:** worker slots. Before a ticket's first turn it creates a worktree; then it runs one turn at a time per ticket, passing all pending inputs as one message.
-- **Worker adapter:** an interface with one method, `run(turn) → { ok, sessionId, text, error, transient, costUsd }`. One file per coding agent.
+- **Worker adapter:** an interface with one method, `run(turn) → { ok, sessionId, text, error, transient, exhausted, costUsd }`. One file per coding agent. `exhausted` means the model's quota or credit is used up, so another model should take over.
 - **Panel:** a small local web page, plus the token-authenticated worker API that `sa` calls. Bind to `127.0.0.1`; it has no login.
 
 ---
@@ -135,7 +141,7 @@ sa handback <trigger> <reason>            a follow-up is beyond this ticket; sen
   - `--pr N` subscribes the ticket to that PR.
 - **Purposes:** `ack` and `answer` from those commands; `result` for `ready` and `dropped` messages; `attention` for `blocked` and `failed`.
 - **Worker environment variables:**
-  - ticket: `SUPERAGENT_TICKET`, `SUPERAGENT_NAME`, `SUPERAGENT_DIR`, `SUPERAGENT_BRANCH`, `SUPERAGENT_ORIGIN_TRIGGER`;
+  - ticket: `SUPERAGENT_TICKET`, `SUPERAGENT_NAME`, `SUPERAGENT_DIR`, `SUPERAGENT_BRANCH`, `SUPERAGENT_ORIGIN_TRIGGER`, `SUPERAGENT_MODEL` (the roster id working on it);
   - GitHub: `SUPERAGENT_GITHUB_REPO`, `SUPERAGENT_GITHUB_ACCOUNT`;
   - host: `SUPERAGENT_URL`, `SUPERAGENT_TOKEN`.
 
@@ -144,7 +150,35 @@ sa handback <trigger> <reason>            a follow-up is beyond this ticket; sen
 
 ---
 
-## 5. Worker adapters
+## 5. Worker adapters and the model roster
+
+### The roster and the router
+
+To use every model you have, list them all as roster entries and let a router pick one per ticket.
+
+```json
+"roster": [
+  { "id": "claude-opus",   "adapter": "claude-code", "model": "opus",   "effort": "high", "cost": 5, "tags": ["hard"],
+    "strengths": "Hardest work: design changes, subtle bugs, large refactors, unclear requests." },
+  { "id": "claude-sonnet", "adapter": "claude-code", "model": "sonnet", "cost": 2, "tags": ["default"],
+    "strengths": "Everyday features and fixes." },
+  { "id": "claude-haiku",  "adapter": "claude-code", "model": "haiku",  "cost": 1, "tags": ["cheap"],
+    "strengths": "Small mechanical changes: typos, renames, config, docs." },
+  { "id": "codex-gpt-6.1-sol", "adapter": "codex", "model": "gpt-6.1-sol", "effort": "high", "cost": 3, "maxConcurrent": 1,
+    "strengths": "OpenAI frontier model through Codex." }
+],
+"router": { "mode": "llm", "model": "claude-opus-5-5", "effort": "high", "failoverEffort": "medium" }
+```
+
+- **Choosing a model for a new ticket,** in this order:
+  1. an allowed person's explicit `model:<id>` or `model:<tag>` in the request;
+  2. the router model, by default Claude Opus 5.5 at `high` effort, which gets the request text and the entries that are available right now (enabled, not cooling down, under their `maxConcurrent`), and answers with one id and a reason;
+  3. rules, if the router fails or names an id it was not offered: the `default`-tagged entry, else the cheapest.
+- **The router has no tools** (`claude -p --tools "" --json-schema …`), the request is fenced as data in its prompt, and its answer is checked against the offered ids. The gate has already decided who may ask for work; the router only decides which model does it.
+- **A ticket keeps its model,** because sessions cannot move between agents. An allowed person can switch it with `model:<id>` in a follow-up.
+- **Failover.** A quota error (an error text with "usage limit", "insufficient_quota", "credit balance is too low" and the like) or transient errors beyond the retry limit put that entry on a cooldown (30 minutes is a good default). The router, at `medium` effort, picks a replacement, preferring another provider; the cut-off inputs are delivered again with a handoff note telling the new worker to check the directory, git history and GitHub before repeating any outside action. If no model is left, the ticket reports `failed`.
+- **Cross-model review (optional).** When a worker first reports `ready`, the host holds the report and runs a read-only turn by a model from another adapter (for example, Codex reviews Claude's branch). Its findings arrive as an input; the worker fixes what is right and reports again. One round is usually enough.
+- **The `strengths` and `cost` lines are what the router reads.** Write what each model is actually good at in your experience; vague descriptions make routing close to random.
 
 ### Claude Code
 
@@ -170,6 +204,31 @@ echo "$MESSAGE" | claude -p --output-format json \
 - **Authentication:** `ANTHROPIC_API_KEY`, ideally a dedicated key with a spend limit. Alternatively, `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token`, which uses the person's Claude subscription.
 - **In containers,** set `DISABLE_AUTOUPDATER=1` and pin the version (`npm install -g @anthropic-ai/claude-code@<version>`).
 - **Pull request footer:** Claude Code adds a "Generated with Claude Code" footer to PR descriptions unless its settings turn that off.
+
+### OpenAI Codex
+
+```sh
+# first turn: read the new thread id from the events; the message goes on stdin ("-")
+echo "$MESSAGE" | codex exec --json --skip-git-repo-check \
+  [-m gpt-6.1-sol] [-c model_reasoning_effort="high"] \
+  -c developer_instructions="$INSTRUCTIONS_AS_A_TOML_STRING" \
+  --dangerously-bypass-approvals-and-sandbox -
+
+# later turns
+echo "$MESSAGE" | codex exec resume --json --skip-git-repo-check \
+  -c developer_instructions="…" --dangerously-bypass-approvals-and-sandbox "$THREAD_ID" -
+```
+
+- **Output:** JSON lines. `thread.started` carries `thread_id` (the session id); `item.completed` events whose `item.type` is `agent_message` carry `item.text` (the last one is the final text); `turn.completed` carries token `usage` and means success; `turn.failed` (`error.message`) and `error` events carry failures. There is no cost in US dollars.
+- **Instructions:** `-c developer_instructions="…"` adds them as developer instructions. Config overrides are not stored in the session, so pass them on every turn. The value is parsed as TOML; a JSON-encoded string is a valid TOML string. Codex also reads the repository's `AGENTS.md` by itself.
+- **Effort** has no flag of its own: use `-c model_reasoning_effort="…"`. The values each model accepts are in `~/.codex/models_cache.json`.
+- **Models:** `~/.codex/models_cache.json` lists every model the account can use, with `visibility` and the supported efforts; skip entries with visibility `hide`. On 12 November 2026 a ChatGPT-plan account listed `gpt-6.1-sol`, `gpt-6.1-terra`, `gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra` and `gpt-5.6-luna`, with `gpt-6.1-sol` as the default.
+- **Unattended work** needs `--dangerously-bypass-approvals-and-sandbox` (git push and `gh` need the network, which the `workspace-write` sandbox blocks), so run Codex only inside the container. `codex exec resume` has no `--sandbox` flag; for read-only turns use `-c sandbox_mode="read-only" -c approval_policy="never"`, which works with both.
+- **Pass the message on stdin with `-`.** Without it, `codex exec` waits for stdin and prints "Reading additional input from stdin...".
+- **Authentication:** `OPENAI_API_KEY` (`printenv OPENAI_API_KEY | codex login --with-api-key`), or a ChatGPT plan with `codex login --device-auth`. Both store credentials under `$CODEX_HOME` (default `~/.codex`), so keep it in the persistent volume.
+- **Fallback:** if `resume` cannot find the thread, start a new one; the worktree and the handoff note carry the context.
+- **The Codex Claude Code plugin is a different tool.** OpenAI's `codex@openai-codex` plugin ([openai/codex-plugin-cc](https://github.com/openai/codex-plugin-cc)) adds `/codex:rescue`, `/codex:review` and `/codex:adversarial-review` to an interactive Claude Code session and drives Codex through `codex app-server` (JSON-RPC over stdio). It is useful at a desk, but a superagent worker should call the Codex CLI directly, like the other adapters, so the host owns sessions, retries and quotas.
+- **Windows:** the Codex desktop app ships its own CLI under `%LOCALAPPDATA%\OpenAI\Codex\bin\<hash>\codex.exe`, which is often not on `PATH`. Point the host at it explicitly, or `npm install -g @openai/codex`.
 
 ### OpenCode (v2)
 
@@ -210,7 +269,7 @@ opencode run --format json --auto --session "$SESSION_ID" "$MESSAGE"
 
 ### 7.1 Prerequisites
 
-Node 24+, git, GitHub CLI (`gh`), Docker, and the chosen agent CLI. Confirm the agent runs headless with a trivial prompt and that the output parses.
+Node 24+, git, GitHub CLI (`gh`), Docker, and every agent CLI on the roster (`@anthropic-ai/claude-code`, `@openai/codex`, OpenCode). Confirm each one runs headless with a trivial prompt and that the output parses, for example `echo "reply with the word ok" | codex exec --json --skip-git-repo-check -`.
 
 ### 7.2 A sandbox repository
 
@@ -255,15 +314,15 @@ Steps:
 
 Use one long-running container holding the host and all workers. Tickets are isolated from each other only by worktree and session, not by container.
 
-- **Image:** `node:24-bookworm-slim` + git + `gh` (from GitHub's apt repo) + the pinned agent CLI + the app. Run as the non-root `node` user, with `HOME` set inside a persistent volume (`/data/home`), so agent sessions survive restarts and rebuilds.
+- **Image:** `node:24-bookworm-slim` + git + `gh` (from GitHub's apt repo) + the pinned agent CLIs (Claude Code and Codex) + the app. Run as the non-root `node` user, with `HOME` set inside a persistent volume (`/data/home`), so agent sessions survive restarts and rebuilds.
 - **Compose settings:**
   - `cap_drop: [ALL]`, `no-new-privileges`, `mem_limit`, `pids_limit`, `init: true`, `restart: unless-stopped`;
   - publish the panel on `127.0.0.1` only;
   - mount the config and the prompts read-only, so prompt edits apply on the next turn;
   - nothing else from the host machine, in particular not the home directory or SSH keys.
-- **Secrets:** a gitignored `.env.sandbox` (`chmod 600`) with `GH_TOKEN` and `ANTHROPIC_API_KEY` (or the OpenCode provider's key), loaded with `env_file`.
+- **Secrets:** a gitignored `.env.sandbox` (`chmod 600`) with `GH_TOKEN`, `ANTHROPIC_API_KEY` (or `CLAUDE_CODE_OAUTH_TOKEN`) for Claude workers and the router, and `OPENAI_API_KEY` for Codex (or the OpenCode provider's key), loaded with `env_file`. To use a ChatGPT plan for Codex instead of a key, run `codex login --device-auth` once inside the container; the login stays in the volume.
 - **Entrypoint checks on every start**, each failing with a clear message:
-  1. Required secrets are set.
+  1. Required secrets are set, for every adapter on the roster and for the router.
   2. `gh api user` returns the configured bot login. Refuse anyone else's token; test this by passing the person's own token once.
   3. Make git use the bot's identity:
      ```sh
@@ -283,14 +342,23 @@ Use one long-running container holding the host and all workers. Tickets are iso
   "sources": {
     "github": { "repo": "OWNER/sandbox", "agentLogin": "BOT", "allow": ["OWNER"], "pollSeconds": 30 }
   },
-  "worker": { "adapter": "claude-code", "maxConcurrent": 2 },
+  "roster": [
+    { "id": "claude-opus", "adapter": "claude-code", "model": "opus", "effort": "high", "cost": 5, "tags": ["hard"], "strengths": "…" },
+    { "id": "claude-sonnet", "adapter": "claude-code", "model": "sonnet", "cost": 2, "tags": ["default"], "strengths": "…" },
+    { "id": "claude-haiku", "adapter": "claude-code", "model": "haiku", "cost": 1, "tags": ["cheap"], "strengths": "…" },
+    { "id": "codex-gpt-6.1-sol", "adapter": "codex", "model": "gpt-6.1-sol", "effort": "high", "cost": 3, "maxConcurrent": 1, "strengths": "…" },
+    { "id": "codex-gpt-5.6-luna", "adapter": "codex", "model": "gpt-5.6-luna", "cost": 1, "tags": ["cheap"], "maxConcurrent": 1, "strengths": "…" }
+  ],
+  "router": { "mode": "llm", "model": "claude-opus-5-5", "effort": "high", "failoverEffort": "medium", "defaultEntry": "claude-sonnet" },
+  "review": { "enabled": true, "rounds": 1 },
+  "worker": { "maxConcurrent": 3, "maxRetries": 3, "cooldownMinutes": 30 },
   "workspace": { "repoPath": "/data/repo", "branchPrefix": "agent/" },
   "messages": { "maxWords": 120 },
   "panel": { "host": "0.0.0.0", "port": 3090 }
 }
 ```
 
-Switching to OpenCode is `"adapter": "opencode"` plus an OpenCode provider key.
+One model only is a roster of one entry with `"router": { "mode": "rules" }`. OpenCode entries use `"adapter": "opencode"` plus an OpenCode provider key.
 
 ---
 
@@ -298,25 +366,27 @@ Switching to OpenCode is `"adapter": "opencode"` plus an OpenCode provider key.
 
 Run these in order and show each result:
 
-1. **Unit tests** cover the gate, including "message text cannot grant permission", and the ticket lifecycle with a scripted mock worker.
+1. **Unit tests** cover the gate, including "message text cannot grant permission", the router (hints, unknown answers, failover), each adapter's output parsing, and the ticket lifecycle with a scripted mock worker, including quota failover from Claude to Codex and cross-model review.
 2. **Local smoke test without GitHub:** a request typed into the panel produces a worktree, a commit, and a result message. A follow-up reuses the same session id and branch. A request from someone off the allow list is ignored before any model runs.
-3. **Read-only GitHub poll** against a busy public repo parses issues, PRs and bots without writing anything.
-4. **Entrypoint guards:** no secrets means a clear refusal; the person's own token means "belongs to @them, not @BOT".
-5. **`doctor` inside the container:** agent CLI version, bot login, push access, and a local clone with an origin.
-6. **The first real ticket:** the person comments `@BOT <small request>` on an issue. Expected, within about a minute:
+3. **Routing dry run:** ask the router about a typo fix and a large redesign. It should pick a cheap entry for the first and a strong one for the second, without creating a ticket. In our run Opus 5.5 sent "fix the typo" to Haiku and "redesign the storage layer with online migration" to Opus.
+4. **Read-only GitHub poll** against a busy public repo parses issues, PRs and bots without writing anything.
+5. **Entrypoint guards:** no secrets means a clear refusal; the person's own token means "belongs to @them, not @BOT".
+6. **`doctor` inside the container:** agent CLI version, bot login, push access, and a local clone with an origin.
+7. **The first real ticket:** the person comments `@BOT <small request>` on an issue. Expected, within about a minute:
    - one acknowledgement comment;
    - a PR from the bot with a one-line diff and passing CI, the description starting with the automated-agent line;
    - one "ready for review" comment;
    - the ticket shown as "Awaiting review".
 
-   In our run this took about 30 seconds and cost about 10 US cents with Claude Code's default model; small local turns on Haiku cost about 2 cents.
-7. **Merge the PR:** the ticket ends as "merged" on the next poll.
-8. **Comment on the PR without mentioning the bot:** the same ticket and session wake up.
-9. **"@BOT stop":** the ticket ends, and later comments do not revive it.
+   In our run this took about 30 seconds and cost about 10 US cents with Claude Code's default model; small local turns on Haiku cost about 1–2 cents, plus a few cents for each Opus routing call.
+8. **Merge the PR:** the ticket ends as "merged" on the next poll.
+9. **Comment on the PR without mentioning the bot:** the same ticket and session wake up.
+10. **"@BOT stop":** the ticket ends, and later comments do not revive it.
+11. **Every model works:** request one small task per roster entry with `model:<id>` and confirm each produces a commit. For failover, revoke one provider's credentials and confirm the ticket moves to another provider with a handoff note.
 
 ## 9. Security notes
 
-- Workers run shell commands unattended with permission prompts off, and read text anyone can write. Limit what they can see (container, no host mounts), what they hold (bot token with `repo` and `workflow` only, a capped model key), and who can make them act (the deterministic gate).
+- Workers run shell commands unattended with permission prompts off (Claude Code's `--dangerously-skip-permissions`, Codex's `--dangerously-bypass-approvals-and-sandbox`), and read text anyone can write. Limit what they can see (container, no host mounts), what they hold (bot token with `repo` and `workflow` only, a capped model key), and who can make them act (the deterministic gate).
 - Command blocklists through `PATH` shims are guard rails, not a sandbox; an agent can call a program by absolute path.
 - Within one container, a worker could reach another ticket's worktree. For real isolation between tickets, run each turn in its own container (`docker run … claude -p`, with that ticket's worktree and session folder mounted). The host then needs Docker access, so run it outside the worker containers.
 - To allow auto-merge, DeepSeek's approach is to enable it from a second account (so the agent never merges its own work), only for small PRs with passing CI and approvals, enforced by branch protection.
@@ -327,10 +397,37 @@ Run these in order and show each result:
 - **Hosted products already cover "mention a bot, get a PR"**: the Claude Code GitHub Action, GitHub's Copilot coding agent, and Cursor's background agents. This pattern is for people who want it self-hosted, agent-agnostic, and shaped around attention.
 - **Not covered here, but in DeepSeek's design:**
   - proactive work from team-written rules, starting in an "observe" mode that only records what the agent would have done;
-  - an LLM coordinator for ambiguous follow-ups;
+  - an LLM coordinator for ambiguous follow-ups (the router here only picks models for new tickets and failover);
   - policy versioning;
   - chat sources such as Feishu or Slack;
   - worktree cleanup after tickets end.
+
+---
+
+## 11. The Claude Code plugin in this repository
+
+`plugins/superagent` is a working implementation of this guide, packaged as a Claude Code plugin. The host (about 2,300 lines of TypeScript plus 500 of tests) is in `plugins/superagent/app`; the plugin adds commands and a skill that set it up and operate it.
+
+Install it in Claude Code:
+
+```
+/plugin marketplace add tjtanaa/deepseek-superagent-guide
+/plugin install superagent@deepseek-superagent-guide
+```
+
+On Claude Code 2.1.275 or later this also works in one step: `/plugin install superagent --marketplace tjtanaa/deepseek-superagent-guide`.
+
+| Command | What it does |
+| --- | --- |
+| `/superagent:setup [OWNER/REPO]` | Walks through section 0's questions, detects your models, writes the config, builds and checks the container |
+| `/superagent:roster` | Lists the Claude Code, Codex and OpenCode CLIs and every Codex model on the machine, and proposes roster entries |
+| `/superagent:route <request>` | Asks the router which model it would pick, without creating a ticket |
+| `/superagent:start [config]` | Runs the host locally, without Docker, after `doctor` passes |
+| `/superagent:status` | Tickets that need a person, and which models are available or cooling down |
+
+Without Claude Code, from `plugins/superagent/app`: `npm install`, then `node src/main.ts detect | route --text "…" | doctor | start --config superagent.json`, and `npm test`. For the container, copy `docker/superagent.example.json` to `docker/superagent.json` and `docker/.env.sandbox.example` to `docker/.env.sandbox`, fill both in, and run `docker compose up -d --build` in `docker/`.
+
+What it adds to the design above: the model roster and Opus router, quota-aware failover across providers, optional cross-model review, a `doctor` command, and a panel that shows each model's state and cost. What it leaves out is listed in section 10.
 
 ---
 

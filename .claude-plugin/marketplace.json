@@ -1,0 +1,16 @@
+{
+  "name": "deepseek-superagent-guide",
+  "owner": {
+    "name": "tjtanaa"
+  },
+  "metadata": {
+    "description": "Plugins that accompany the DeepSeek superagent guide."
+  },
+  "plugins": [
+    {
+      "name": "superagent",
+      "source": "./plugins/superagent",
+      "description": "Self-hosted superagent: GitHub mentions become tickets worked by Claude Code, Codex or OpenCode, with Claude Opus routing each ticket to the best model on your roster."
+    }
+  ]
+}
