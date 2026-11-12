@@ -1,0 +1,9 @@
+{
+  "name": "superagent",
+  "version": "0.1.0",
+  "description": "Set up and run a self-hosted superagent (after DeepSeek's dsh-superagent-prototype) whose workers are Claude Code and Codex models, routed by Claude Opus.",
+  "author": { "name": "tjtanaa" },
+  "repository": "https://github.com/tjtanaa/deepseek-superagent-guide",
+  "license": "MIT",
+  "keywords": ["superagent", "codex", "claude-code", "github", "agents"]
+}
